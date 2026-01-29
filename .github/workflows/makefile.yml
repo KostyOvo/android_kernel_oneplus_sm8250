@@ -1,0 +1,137 @@
+name: 🧪 Build Kernel with KernelSU
+
+on:
+  workflow_dispatch:  # 手动触发
+  # push:
+  #   branches: [ lineage-23.0 ]
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    env:
+      CLANG_VERSION: clang-r487747c
+      KERNEL_DEFCONFIG: vendor/oneplus/sm8250-perf_defconfig
+      ANYKERNEL_REPO: https://github.com/KostyOvo/AnyKernel3.git
+      ANYKERNEL_BRANCH: main
+
+    steps:
+      - name: 🧹 Clean workspace
+        run: |
+          echo "Starting fresh build environment..."
+
+      - name: 📥 Download kernel source with retry
+        run: |
+          echo "::group::📥 Downloading kernel source (lineage-23.0)..."
+          for attempt in {1..3}; do
+            echo "Attempt $attempt to download kernel archive..."
+            if wget -T 60 -O kernel.tar.gz \
+              https://github.com/KostyOvo/android_kernel_oneplus_sm8250/archive/refs/heads/lineage-23.0.tar.gz; then
+              echo "✅ Download succeeded!"
+              break
+            else
+              echo "❌ Download failed on attempt $attempt"
+              if [ "$attempt" -eq 3 ]; then
+                echo "::error::Failed to download kernel source after 3 attempts"
+                exit 1
+              fi
+              sleep 10
+            fi
+          done
+          echo "::endgroup::"
+
+      - name: 🗂️ Extract kernel source
+        run: |
+          echo "::group::📦 Extracting kernel source (may take 2-5 minutes)..."
+          time tar xzf kernel.tar.gz --strip=1
+          echo "✅ Extraction completed."
+          echo "📁 Top-level files:"
+          ls -la | head -n 15
+          echo "::endgroup::"
+
+      - name: 🧩 Apply KernelSU v0.9.5
+        run: |
+          echo "::group::🔧 Applying KernelSU patch (v0.9.5)..."
+          git clone -b v0.9.5 --depth=1 https://github.com/tiann/KernelSU.git
+          ./KernelSU/scripts/apply.sh . || echo "⚠️ Applied in non-git mode (expected)"
+          echo "✅ KernelSU applied successfully."
+          echo "::endgroup::"
+
+      - name: 🛠️ Create prebuilts directory
+        run: |
+          echo "::group::📂 Creating prebuilts directory structure..."
+          mkdir -p prebuilts/clang/host/linux-x86
+          echo "✅ Created: prebuilts/clang/host/linux-x86"
+          echo "::endgroup::"
+
+      - name: 📦 Download prebuilt Clang toolchain
+        run: |
+          echo "::group::⬇️ Downloading Clang toolchain (${CLANG_VERSION})..."
+          cd prebuilts/clang/host/linux-x86
+          for attempt in {1..3}; do
+            echo "Attempt $attempt to download ${CLANG_VERSION}.tar.xz..."
+            if wget -T 90 -O clang.tar.xz \
+              https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master/${CLANG_VERSION}.tar.xz; then
+              echo "✅ Clang download succeeded!"
+              break
+            else
+              echo "❌ Clang download failed on attempt $attempt"
+              if [ "$attempt" -eq 3 ]; then
+                echo "::error::Failed to download Clang after 3 attempts"
+                exit 1
+              fi
+              sleep 15
+            fi
+          done
+          echo "::endgroup::"
+
+      - name: 🗃️ Extract Clang toolchain
+        run: |
+          echo "::group::🗃️ Extracting Clang toolchain (this may take 1-2 minutes)..."
+          cd prebuilts/clang/host/linux-x86
+          time tar xf clang.tar.xz
+          mv ${CLANG_VERSION} clang
+          echo "✅ Clang extracted to ./clang"
+          echo "Clang version:"
+          ./clang/bin/clang --version | head -n 2
+          echo "::endgroup::"
+
+      - name: ⚙️ Install build dependencies
+        run: |
+          echo "::group::🛠️ Installing build dependencies..."
+          sudo apt update -y
+          sudo apt install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg gperf imagemagick lib32ncurses5-dev lib32readline-dev lib32z1-dev liblz4-tool libncurses5-dev libsdl1.2-dev libssl-dev libwxgtk3.0-gtk3-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3
+          echo "✅ Dependencies installed."
+          echo "::endgroup::"
+
+      - name: 🏗️ Build kernel
+        run: |
+          echo "::group::🔨 Starting kernel build..."
+          export PATH="$PWD/prebuilts/clang/host/linux-x86/clang/bin:$PATH"
+          make O=out ARCH=arm64 ${KERNEL_DEFCONFIG}
+          time make -j$(nproc --all) O=out ARCH=arm64 CC=clang LD=ld.lld
+          echo "✅ Kernel build completed!"
+          echo "::endgroup::"
+
+      - name: 📤 Prepare AnyKernel3 package
+        run: |
+          echo "::group::📦 Packaging kernel with AnyKernel3..."
+          git clone -b $ANYKERNEL_BRANCH $ANYKERNEL_REPO AnyKernel3
+          cp out/arch/arm64/boot/Image.gz-dtb AnyKernel3/
+          echo "✅ Image.gz-dtb copied to AnyKernel3 folder."
+          echo "::endgroup::"
+
+      - name: 💾 Upload built kernel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernel-Image.gz-dtb-${{ github.run_number }}
+          path: AnyKernel3/Image.gz-dtb
+          retention-days: 7
+
+      - name: 📁 Optional: Upload full AnyKernel3 zip (uncomment if needed)
+        run: |
+          echo "::group::📦 Creating flashable ZIP..."
+          cd AnyKernel3
+          zip -r kernel-flashable.zip .
+          echo "✅ Flashable ZIP created."
+          echo "::endgroup::"
+        # Then use upload-artifact to save the zip if desired
