@@ -18,7 +18,7 @@ jobs:
           kernel-url: https://github.com/LineageOS/android_kernel_oneplus_sm8250
           kernel-dir: msm-4.19
           kernel-branch: lineage-23.0
-          config: kona-perf_defconfig
+          config: vendor/kona-perf_defconfig
           arch: arm64
           aosp-gcc: true
           aosp-clang: true
