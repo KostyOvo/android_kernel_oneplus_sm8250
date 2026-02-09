@@ -1,87 +1,67 @@
-name: Build OnePlus sm8250 Kernel
+name: Build OnePlus sm8250 Kernel (8-Core)
 
 on:
+  workflow_dispatch:  # 仅手动触发，避免误编译
   push:
-    branches:
-      - main
-      - master
-  pull_request:
-    branches:
-      - main
-      - master
-  workflow_dispatch: # 允许手动点击触发
+    branches: [ main, master ]
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    # 增加运行时间限制（内核编译很耗时）
-    timeout-minutes: 60 
+    timeout-minutes: 45
 
     steps:
-      - name: Checkout Code
-        # 关键：必须使用 fetch-depth: 0，否则打补丁会失败
+      - name: 📥 Checkout Source
         uses: actions/checkout@v4
         with:
-          submodules: recursive
-          fetch-depth: 0
+          fetch-depth: 0  # 必须完整历史（内核编译依赖 git 信息）
 
-      - name: Set up Environment
+      - name: 🛠️ Install Dependencies
         run: |
-          echo "Preparing environment..."
-          sudo apt-get update -y
-          sudo apt-get install -y git make gcc libssl-dev bc bison flex libncurses5-dev libelf-dev
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bc bison build-essential ccache curl flex \
+            g++-multilib gcc-multilib git gnupg libssl-dev libelf-dev libncurses-dev \
+            liblz4-tool rsync unzip wget xz-utils zlib1g-dev
 
-      - name: Install KernelSU
+      - name: 📦 Setup Toolchains
         run: |
-          echo "Cloning and installing KernelSU..."
-          # 克隆 KernelSU 仓库
-          git clone https://github.com/tiann/KernelSU.git
-          # 进入仓库并切换到最新稳定分支（main）
-          cd KernelSU
-          # 安装 KernelSU，指定内核源码路径
-          bash install.sh -k ../
-
-      - name: Set up Clang Toolchain
-        run: |
-          echo "Downloading Clang..."
-          # 下载 Google 预构建的 Clang (Android NDK r27c)
-          wget https://dl.google.com/android/repository/android-ndk-r27c-linux.zip
-          unzip -q android-ndk-r27c-linux.zip
-          # 设置环境变量
-          echo "LLVM=android-ndk-r27c/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_ENV
-          echo "PATH=${{ github.workspace }}/android-ndk-r27c/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH" >> $GITHUB_ENV
-
-      - name: Compile Kernel
-        run: |
-          echo "Starting compilation..."
-          # 定义架构和配置
-          ARCH=arm64
-          SUBARCH=arm64
-          DEFCONFIG=vendor/kona-perf_defconfig
+          # Clang (Google NDK r27c)
+          wget -q https://github.com/LineageOS/android_prebuilts_clang_host_linux-x86/releases/download/clang-r487747c/clang-r487747c-linux-x86_64.tar.xz
+          tar -xf clang-r487747c-linux-x86_64.tar.xz -C $HOME
           
-          # 清理旧文件
-          make O=out $DEFCONFIG
+          # GCC (aarch64)
+          wget -q https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9/releases/download/v2023.01/aarch64-linux-android-4.9-linux-x86_64.tar.xz
+          tar -xf aarch64-linux-android-4.9-linux-x86_64.tar.xz -C $HOME
           
-          # 开始编译，使用 2 个线程（GitHub Actions 虚拟机通常有 2 个核心）
-          make -j$(nproc) O=out \
-            ARCH=$ARCH \
-            SUBARCH=$SUBARCH \
-            CC=clang \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            CROSS_COMPILE=aarch64-linux-android-
-            
-      - name: Find Output
-        run: |
-          # 查找生成的 Image 或 Image.gz-dtb
-          find out/arch/arm64/boot/dts -name "*.dtb" -exec cp {} . \;
-          find out/arch/arm64/boot -name "Image*" -exec cp {} . \;
+          echo "CLANG_PATH=$HOME/clang-r487747c" >> $GITHUB_ENV
+          echo "GCC_PATH=$HOME/aarch64-linux-android-4.9" >> $GITHUB_ENV
 
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v3
+      - name: 🔧 Configure Kernel
+        run: |
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export PATH="$CLANG_PATH/bin:$GCC_PATH/bin:$PATH"
+          
+          make O=out vendor/kona-perf_defconfig
+
+      - name: ⚙️ Compile Kernel (-j10)
+        run: |
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export PATH="$CLANG_PATH/bin:$GCC_PATH/bin:$PATH"
+          export CC=clang
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export CROSS_COMPILE=aarch64-linux-android-
+          
+          make O=out -j10  # 严格按需求：10 线程编译
+
+      - name: 📤 Upload Artifacts
+        uses: actions/upload-artifact@v4
         with:
-          name: kernel-image
+          name: OnePlus-sm8250-Kernel
           path: |
-            ./Image*
-            ./*.dtb
-            ./dtb.img # 如果生成了 dtb.img 也上传
+            out/arch/arm64/boot/Image.gz
+            out/arch/arm64/boot/dtb.img
+            out/arch/arm64/boot/dts/qcom/*.dtb
+          retention-days: 7
 
